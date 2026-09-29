@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   parseRelationGoldJsonl,
   relationMetrics,
+  safeReportNamePart,
   sampleRelationGold,
   storyTieMetrics,
   type RelationPrediction,
@@ -63,6 +64,13 @@ test("sampling is deterministic and applies the split before the limit", () => {
   assert.equal(one.length, 5);
   assert.equal(holdout.length, 4);
   assert.ok(holdout.every((item) => item.samplingContext?.benchmarkSplit === "holdout"));
+});
+
+test("custom split names are made safe before they enter report filenames", () => {
+  assert.equal(safeReportNamePart("development"), "development");
+  assert.equal(safeReportNamePart("../../holdout\\windows"), "holdout-windows");
+  assert.equal(safeReportNamePart("  中文 split / 2026  "), "split-2026");
+  assert.equal(safeReportNamePart("../.."), "all");
 });
 
 test("multiclass metrics expose the confusion matrix, per-class scores, macro-F1, and errors", () => {

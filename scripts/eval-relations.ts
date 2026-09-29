@@ -9,11 +9,12 @@ import { REPO_ROOT } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
 import { modelFor } from "@aihot/backend/editorial/models";
 import { PAIR_SYSTEM, PairSchema, RELATE_PROMPT_VERSION, pairUser } from "@aihot/backend/events/relate";
-import { MODELS, chatJson } from "@aihot/backend/providers/llm";
+import { MODELS, ModelOutputError, chatJson } from "@aihot/backend/providers/llm";
 import { completeReceipt } from "@aihot/backend/providers/receipts";
 import {
   parseRelationGoldJsonl,
   relationMetrics,
+  safeReportNamePart,
   sampleRelationGold,
   storyTieMetrics,
   toReportView,
@@ -105,7 +106,8 @@ async function main() {
         await completeReceipt(sql, res.receiptId);
         return { row, out: res.data, receiptId: res.receiptId, reused: res.reused, error: null as string | null };
       } catch (error) {
-        return { row, out: null, receiptId: null as number | null, reused: false, error: String(error).slice(0, 300) };
+        const receiptId = error instanceof ModelOutputError ? error.receiptId : null;
+        return { row, out: null, receiptId, reused: false, error: String(error).slice(0, 300) };
       }
     });
 
@@ -162,7 +164,8 @@ async function main() {
 
   const outDir = path.join(REPO_ROOT, ".data/eval");
   mkdirSync(outDir, { recursive: true });
-  const file = path.join(outDir, `relations-${values.split}-${sample.length}-${Date.now()}.json`);
+  const splitName = safeReportNamePart(values.split!);
+  const file = path.join(outDir, `relations-${splitName}-${sample.length}-${Date.now()}.json`);
   const meta = {
     split: values.split,
     n: sample.length,
