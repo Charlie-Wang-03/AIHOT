@@ -70,6 +70,8 @@ node --env-file=.env scripts/eval-relations.ts \
 - model errors、token usage、平均 provider latency 和 wall-clock time；
 - 每条 case 的 decision、confidence、difference 和 receipt id。
 
-模型调用走现有 receipt 和 budget 机制。相同模型、prompt 和输入的重复评测会复用已有 receipt；评测使用独立的 `eval_relation_pair` purpose，不混入 production grouping 的 capability 统计。
+模型调用走现有 receipt 和 budget 机制。相同模型、prompt 和输入的重复评测会复用已有 receipt；同次运行中输入相同的样本共享一次请求结果，各自按自己的 gold 计分，失败也共享，不在该次运行中重复请求。`reused` 包括共享结果及已有回执的复用。评测使用独立的 `eval_relation_pair` purpose，不混入 production grouping 的 capability 统计。
 
-CI 只测试 JSONL parsing、deterministic sampling 和 metrics 等纯逻辑，不访问外部模型服务。
+token usage 与平均 latency 按报告引用的回执所对应的全部请求尝试汇总，包括之前解析失败的响应；同一回执不会因多条样本重复计算。缓存重跑仍展示这些历史用量，不代表本次新增费用。
+
+CI 验证 JSONL parsing、deterministic sampling、metrics，以及本地模型替身下的并发复用和重试用量统计，不访问外部模型服务。

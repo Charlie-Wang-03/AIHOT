@@ -58,8 +58,8 @@ async function usageFor(receiptIds: number[]) {
     SELECT
       sum(coalesce((usage->>'prompt_tokens')::int, (usage->>'input_tokens')::int, 0)) AS tin,
       sum(coalesce((usage->>'completion_tokens')::int, (usage->>'output_tokens')::int, 0)) AS tout,
-      avg(CASE WHEN jsonb_typeof(response->'_latencyMs') = 'number' THEN (response->>'_latencyMs')::numeric END) AS latency
-    FROM receipts WHERE id IN ${sql(ids)}`;
+      avg(latency_ms) AS latency
+    FROM receipt_attempts WHERE receipt_id IN ${sql(ids)}`;
   return {
     tokensIn: Number(usage?.tin ?? 0),
     tokensOut: Number(usage?.tout ?? 0),
@@ -90,21 +90,34 @@ async function main() {
   const report: Record<string, unknown> = {};
   for (const model of models) {
     const started = Date.now();
+    // Distinct gold cases can render identical prompts. Share their result, including failures,
+    // so a cold run scores the same cases as a cached run and never retries a pair within one run.
+    const requests = new Map<string, ReturnType<typeof chatJson<typeof PairSchema>>>();
     const results = await pmap(sample, concurrency, async (row) => {
       try {
-        const res = await chatJson({
-          model,
-          purpose: "eval_relation_pair",
-          subject: `relation-gold:${row.caseId}`,
-          promptVersion: RELATE_PROMPT_VERSION,
-          system: PAIR_SYSTEM,
-          user: pairUser(toReportView(row.a), toReportView(row.b)),
-          schema: PairSchema,
-          temperature: 0,
-          maxTokens: 400,
-        });
-        await completeReceipt(sql, res.receiptId);
-        return { row, out: res.data, receiptId: res.receiptId, reused: res.reused, error: null as string | null };
+        const user = pairUser(toReportView(row.a), toReportView(row.b));
+        let request = requests.get(user);
+        const shared = request !== undefined;
+        if (!request) {
+          request = (async () => {
+            const res = await chatJson({
+              model,
+              purpose: "eval_relation_pair",
+              subject: `relation-gold:${row.caseId}`,
+              promptVersion: RELATE_PROMPT_VERSION,
+              system: PAIR_SYSTEM,
+              user,
+              schema: PairSchema,
+              temperature: 0,
+              maxTokens: 400,
+            });
+            await completeReceipt(sql, res.receiptId);
+            return res;
+          })();
+          requests.set(user, request);
+        }
+        const res = await request;
+        return { row, out: res.data, receiptId: res.receiptId, reused: shared || res.reused, error: null as string | null };
       } catch (error) {
         const receiptId = error instanceof ModelOutputError ? error.receiptId : null;
         return { row, out: null, receiptId, reused: false, error: String(error).slice(0, 300) };
