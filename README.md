@@ -151,6 +151,7 @@ docker compose up -d --build
 | [把它改成你的行业](docs/customize.md) | 站名、分类、信源、提示词、门槛、品牌，一步一步来 |
 | [信源](docs/sources.md) | 六种信源怎么配，分级和全文，外部推送接口 |
 | [精选与校准](docs/selection.md) | 一条资料怎么变成精选，怎么用自己的样本校准 |
+| [事件归组与关系评测](docs/grouping.md) | 事件关系怎么判断，怎么用自己的 pairwise gold set 评测 |
 | [部署](docs/deploy.md) | Docker、域名和 HTTPS、中国大陆、更新、备份、花多少钱 |
 | [架构](docs/architecture.md) | 三个进程、几条不变的规则、目录、对外出口 |
 | [模型榜与 Codex 重置监控](docs/leaderboard.md) | 两个 AI 专属模块 |
