@@ -62,15 +62,25 @@ test("retries of unusable answers stop at the budget, and every request sent is 
 
   const before = provider.hits();
   const outcomes: string[] = [];
+  const unusableReceiptIds: number[] = [];
   for (let i = 0; i < 5; i++) {
     // What a job retry does: the same logical request again.
     await ask(subject).then(
       () => outcomes.push("ok"),
-      (error: unknown) => outcomes.push(error instanceof ModelOutputError ? "unusable" : error instanceof BudgetExceededError ? "budget" : String(error)),
+      (error: unknown) => {
+        if (error instanceof ModelOutputError) {
+          assert.ok(error.receiptId, "a paid unusable response exposes its receipt");
+          unusableReceiptIds.push(error.receiptId);
+          outcomes.push("unusable");
+        } else {
+          outcomes.push(error instanceof BudgetExceededError ? "budget" : String(error));
+        }
+      },
     );
   }
   assert.equal(provider.hits() - before, 2, "requests sent");
   assert.deepEqual(outcomes, ["unusable", "unusable", "budget", "budget", "budget"]);
+  assert.equal(new Set(unusableReceiptIds).size, 1, "retries keep the same logical receipt");
   const attempts = await sql<{ status: string; tokens: number }[]>`
     SELECT a.status, (a.usage->>'total_tokens')::int AS tokens
     FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id WHERE r.subject = ${subject} ORDER BY a.attempt`;
