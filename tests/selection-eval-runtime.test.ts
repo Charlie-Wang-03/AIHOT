@@ -79,12 +79,17 @@ async function evaluate(rows: GoldRow[], providers: { prefilter: string; score: 
 }
 
 async function withoutModelOverrides<T>(run: () => Promise<T>): Promise<T> {
-  const saved = await sql<{ key: string; value: unknown; updated_by: string | null; updated_at: Date }[]>`SELECT key, value, updated_by, updated_at FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+  const saved = await sql<{ key: string; value: unknown; updated_by: string | null; updated_at: Date }[]>`
+    SELECT key, value, updated_by, updated_at FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+  await sql`DELETE FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
   try {
     return await run();
   } finally {
-      for (const row of saved) {
-      await sql`INSERT INTO settings (key, value, updated_by, updated_at) VALUES (${row.key}, ${sql.json(row.value as never)}, ${row.updated_by}, ${row.updated_at})`;
+    await sql`DELETE FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+    for (const row of saved) {
+      await sql`
+        INSERT INTO settings (key, value, updated_by, updated_at)
+        VALUES (${row.key}, ${sql.json(row.value as never)}, ${row.updated_by}, ${row.updated_at})`;
     }
   }
 }
@@ -95,76 +100,76 @@ after(async () => {
 
 test("default evaluation follows the production score route and shares duplicate score inputs without changing tier decisions", async (t) => {
   await withoutModelOverrides(async () => {
-  const prefilter = await stub(() => ({
-    choices: [{ message: { content: JSON.stringify({ label: "PASS", reason: "relevant" }) } }],
-    usage: { prompt_tokens: 10, completion_tokens: 5 },
-  }));
-  const score = await stub(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    return {
-      choices: [{ message: { content: JSON.stringify({ attentionScore: 70 }) } }],
-      usage: { prompt_tokens: 100, completion_tokens: 20 },
-    };
-  });
-  t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
+    const prefilter = await stub(() => ({
+      choices: [{ message: { content: JSON.stringify({ label: "PASS", reason: "relevant" }) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }));
+    const score = await stub(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return {
+        choices: [{ message: { content: JSON.stringify({ attentionScore: 70 }) } }],
+        usage: { prompt_tokens: 100, completion_tokens: 20 },
+      };
+    });
+    t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
 
-  const marker = tag();
-  const rows = [row(`${marker}-t1`, marker, "T1", "select"), row(`${marker}-t2`, marker, "T2", "reject")];
-  const cold = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
-  const warm = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
+    const marker = tag();
+    const rows = [row(`${marker}-t1`, marker, "T1", "select"), row(`${marker}-t2`, marker, "T2", "reject")];
+    const cold = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
+    const warm = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
 
-  assert.equal(cold.model, "glm-5.3-flash-selection", "no --models follows SCORE_MODEL / production routing");
-  assert.deepEqual(cold.summary, warm.summary, "cold and cached evaluations keep the same coverage and metrics");
-  assert.deepEqual(cold.cases.map((item) => item.decision), ["select", "reject"], "the shared score still uses each tier's threshold");
-  assert.deepEqual([cold.summary.decisive, cold.summary.errors, cold.summary.accuracy], [2, 0, 1]);
-  assert.deepEqual([prefilter.hits(), score.hits()], [2, 2], "two per-case prefilters, two shared score calls across both runs");
-  assert.deepEqual([cold.summary.tokensIn, cold.summary.tokensOut], [220, 50], "shared score receipts count once");
+    assert.equal(cold.model, "glm-5.3-flash-selection", "no --models follows SCORE_MODEL / production routing");
+    assert.deepEqual(cold.summary, warm.summary, "cold and cached evaluations keep the same coverage and metrics");
+    assert.deepEqual(cold.cases.map((item) => item.decision), ["select", "reject"], "the shared score still uses each tier's threshold");
+    assert.deepEqual([cold.summary.decisive, cold.summary.errors, cold.summary.accuracy], [2, 0, 1]);
+    assert.deepEqual([prefilter.hits(), score.hits()], [2, 2], "two per-case prefilters, two shared score calls across both runs");
+    assert.deepEqual([cold.summary.tokensIn, cold.summary.tokensOut], [220, 50], "shared score receipts count once");
   });
 });
 
 test("a shared unusable score fails every matching case once, then retry usage includes every provider attempt", async (t) => {
   await withoutModelOverrides(async () => {
-  const prefilter = await stub(() => ({
-    choices: [{ message: { content: JSON.stringify({ label: "PASS", reason: "relevant" }) } }],
-    usage: { prompt_tokens: 10, completion_tokens: 5 },
-  }));
-  const score = await stub((hit) => ({
-    choices: [{ message: { content: hit === 1 ? "not JSON" : JSON.stringify({ attentionScore: 70 }) } }],
-    usage: { prompt_tokens: hit === 1 ? 100 : 300, completion_tokens: 20 },
-  }));
-  t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
+    const prefilter = await stub(() => ({
+      choices: [{ message: { content: JSON.stringify({ label: "PASS", reason: "relevant" }) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }));
+    const score = await stub((hit) => ({
+      choices: [{ message: { content: hit === 1 ? "not JSON" : JSON.stringify({ attentionScore: 70 }) } }],
+      usage: { prompt_tokens: hit === 1 ? 100 : 300, completion_tokens: 20 },
+    }));
+    t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
 
-  const marker = tag();
-  const rows = [row(`${marker}-t1`, marker, "T1", "select"), row(`${marker}-t2`, marker, "T2", "reject")];
-  const failed = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
-  assert.deepEqual([failed.summary.decisive, failed.summary.errors], [0, 2]);
-  assert.equal(score.hits(), 1, "matching cases share the failed score result within one run");
-  assert.equal(failed.summary.tokensIn, 120, "both prefilters plus the unusable paid score are accounted");
+    const marker = tag();
+    const rows = [row(`${marker}-t1`, marker, "T1", "select"), row(`${marker}-t2`, marker, "T2", "reject")];
+    const failed = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
+    assert.deepEqual([failed.summary.decisive, failed.summary.errors], [0, 2]);
+    assert.equal(score.hits(), 1, "matching cases share the failed score result within one run");
+    assert.equal(failed.summary.tokensIn, 120, "both prefilters plus the unusable paid score are accounted");
 
-  const retried = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
-  assert.deepEqual([retried.summary.decisive, retried.summary.errors, retried.summary.accuracy], [2, 0, 1]);
-  assert.equal(score.hits(), 3, "the next run retries once, then performs score-2 once");
-  assert.deepEqual([retried.summary.tokensIn, retried.summary.tokensOut], [720, 70], "usage includes the unusable attempt and both successful retries");
+    const retried = await evaluate(rows, { prefilter: prefilter.url, score: score.url });
+    assert.deepEqual([retried.summary.decisive, retried.summary.errors, retried.summary.accuracy], [2, 0, 1]);
+    assert.equal(score.hits(), 3, "the next run retries once, then performs score-2 once");
+    assert.deepEqual([retried.summary.tokensIn, retried.summary.tokensOut], [720, 70], "usage includes the unusable attempt and both successful retries");
   });
 });
 
 test("custom split names cannot escape the evaluation output directory", async (t) => {
   await withoutModelOverrides(async () => {
-  const prefilter = await stub(() => ({
-    choices: [{ message: { content: JSON.stringify({ label: "BLOCK", reason: "irrelevant" }) } }],
-    usage: { prompt_tokens: 10, completion_tokens: 5 },
-  }));
-  const score = await stub(() => {
-    throw new Error("score should not run for blocked input");
-  });
-  t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
+    const prefilter = await stub(() => ({
+      choices: [{ message: { content: JSON.stringify({ label: "BLOCK", reason: "irrelevant" }) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    }));
+    const score = await stub(() => {
+      throw new Error("score should not run for blocked input");
+    });
+    t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
 
-  const marker = tag();
-  const split = "../../../../outside";
-  const result = await evaluate([row(`${marker}-blocked`, marker, "T1", "reject", split)], { prefilter: prefilter.url, score: score.url }, { split });
-  assert.equal(path.dirname(result.reportPath), path.join(REPO_ROOT, ".data/eval"));
-  assert.ok(path.basename(result.reportPath).startsWith("selection-outside-1-"));
-  assert.equal(result.meta.split, split, "metadata keeps the original user-supplied split");
-  assert.equal(score.hits(), 0);
+    const marker = tag();
+    const split = "../../../../outside";
+    const result = await evaluate([row(`${marker}-blocked`, marker, "T1", "reject", split)], { prefilter: prefilter.url, score: score.url }, { split });
+    assert.equal(path.dirname(result.reportPath), path.join(REPO_ROOT, ".data/eval"));
+    assert.ok(path.basename(result.reportPath).startsWith("selection-outside-1-"));
+    assert.equal(result.meta.split, split, "metadata keeps the original user-supplied split");
+    assert.equal(score.hits(), 0);
   });
 });
