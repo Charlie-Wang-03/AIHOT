@@ -78,12 +78,23 @@ async function evaluate(rows: GoldRow[], providers: { prefilter: string; score: 
   }
 }
 
+async function withoutModelOverrides<T>(run: () => Promise<T>): Promise<T> {
+  const saved = await sql<{ key: string; value: unknown; updated_by: string | null; updated_at: Date }[]>`SELECT key, value, updated_by, updated_at FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+  try {
+    return await run();
+  } finally {
+      for (const row of saved) {
+      await sql`INSERT INTO settings (key, value, updated_by, updated_at) VALUES (${row.key}, ${sql.json(row.value as never)}, ${row.updated_by}, ${row.updated_at})`;
+    }
+  }
+}
+
 after(async () => {
   await closeDb();
 });
 
 test("default evaluation follows the production score route and shares duplicate score inputs without changing tier decisions", async (t) => {
-  await sql`DELETE FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+  await withoutModelOverrides(async () => {
   const prefilter = await stub(() => ({
     choices: [{ message: { content: JSON.stringify({ label: "PASS", reason: "relevant" }) } }],
     usage: { prompt_tokens: 10, completion_tokens: 5 },
@@ -95,7 +106,7 @@ test("default evaluation follows the production score route and shares duplicate
       usage: { prompt_tokens: 100, completion_tokens: 20 },
     };
   });
-  t.after(() => Promise.all([prefilter.close(), score.close()]));
+  t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
 
   const marker = tag();
   const rows = [row(`${marker}-t1`, marker, "T1", "select"), row(`${marker}-t2`, marker, "T2", "reject")];
@@ -108,10 +119,11 @@ test("default evaluation follows the production score route and shares duplicate
   assert.deepEqual([cold.summary.decisive, cold.summary.errors, cold.summary.accuracy], [2, 0, 1]);
   assert.deepEqual([prefilter.hits(), score.hits()], [2, 2], "two per-case prefilters, two shared score calls across both runs");
   assert.deepEqual([cold.summary.tokensIn, cold.summary.tokensOut], [220, 50], "shared score receipts count once");
+  });
 });
 
 test("a shared unusable score fails every matching case once, then retry usage includes every provider attempt", async (t) => {
-  await sql`DELETE FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+  await withoutModelOverrides(async () => {
   const prefilter = await stub(() => ({
     choices: [{ message: { content: JSON.stringify({ label: "PASS", reason: "relevant" }) } }],
     usage: { prompt_tokens: 10, completion_tokens: 5 },
@@ -120,7 +132,7 @@ test("a shared unusable score fails every matching case once, then retry usage i
     choices: [{ message: { content: hit === 1 ? "not JSON" : JSON.stringify({ attentionScore: 70 }) } }],
     usage: { prompt_tokens: hit === 1 ? 100 : 300, completion_tokens: 20 },
   }));
-  t.after(() => Promise.all([prefilter.close(), score.close()]));
+  t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
 
   const marker = tag();
   const rows = [row(`${marker}-t1`, marker, "T1", "select"), row(`${marker}-t2`, marker, "T2", "reject")];
@@ -133,10 +145,11 @@ test("a shared unusable score fails every matching case once, then retry usage i
   assert.deepEqual([retried.summary.decisive, retried.summary.errors, retried.summary.accuracy], [2, 0, 1]);
   assert.equal(score.hits(), 3, "the next run retries once, then performs score-2 once");
   assert.deepEqual([retried.summary.tokensIn, retried.summary.tokensOut], [720, 70], "usage includes the unusable attempt and both successful retries");
+  });
 });
 
 test("custom split names cannot escape the evaluation output directory", async (t) => {
-  await sql`DELETE FROM settings WHERE key IN ('models.score', 'models.prefilter')`;
+  await withoutModelOverrides(async () => {
   const prefilter = await stub(() => ({
     choices: [{ message: { content: JSON.stringify({ label: "BLOCK", reason: "irrelevant" }) } }],
     usage: { prompt_tokens: 10, completion_tokens: 5 },
@@ -144,7 +157,7 @@ test("custom split names cannot escape the evaluation output directory", async (
   const score = await stub(() => {
     throw new Error("score should not run for blocked input");
   });
-  t.after(() => Promise.all([prefilter.close(), score.close()]));
+  t.after(async () => { await Promise.all([prefilter.close(), score.close()]); });
 
   const marker = tag();
   const split = "../../../../outside";
@@ -153,4 +166,5 @@ test("custom split names cannot escape the evaluation output directory", async (
   assert.ok(path.basename(result.reportPath).startsWith("selection-outside-1-"));
   assert.equal(result.meta.split, split, "metadata keeps the original user-supplied split");
   assert.equal(score.hits(), 0);
+  });
 });
