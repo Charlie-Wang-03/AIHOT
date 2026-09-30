@@ -2,6 +2,7 @@
 // withdraw), the post's activity role, outage links and the hot-scanning window. Code decides what
 // a proposition may change; the model's wording never confirms anything on its own.
 import { sql, type Tx } from "../db.ts";
+import { completeReceipt } from "../providers/receipts.ts";
 import type { Proposition, Recognition } from "./recognize.ts";
 import { estimateFor, resolveStatedTime, scheduleFrom, type Schedule } from "./time.ts";
 
@@ -289,6 +290,11 @@ export async function applyRecognition(postId: string, rec: Recognition): Promis
       await tx`INSERT INTO monitor_state (key, value) VALUES ('hot', ${tx.json({ until: new Date(postAt.getTime() + HOT_WINDOW_MS).toISOString() })})
                ON CONFLICT (key) DO UPDATE SET value = CASE WHEN (monitor_state.value->>'until')::timestamptz > (EXCLUDED.value->>'until')::timestamptz THEN monitor_state.value ELSE EXCLUDED.value END, updated_at = now()`;
     }
+
+    // The model answer becomes committed only with the monitor facts derived from it. Keeping the
+    // receipt completion in this transaction preserves the same received → business write → completed
+    // invariant used by analyses, grouping and story digests.
+    await completeReceipt(tx, rec.receiptId);
     return applied;
   });
 }
