@@ -222,6 +222,45 @@ for (const [name, answer] of invalidResponses) test(`invalid ${name} response wr
   assert.equal(receipt!.attempts, 1);
 });
 
+test("embedding batch persistence and paid receipt completion commit atomically", async () => {
+  const items = [item(), item()];
+  const subject = `article:${items[0]!.id}`;
+  const before = requests.length;
+  await sql.unsafe(`CREATE FUNCTION test_embedding_batch_rollback() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.ref_id = '${items[1]!.id}' AND NEW.model = '${EMBEDDING_MODEL}' THEN
+        RAISE EXCEPTION 'intentional embedding batch rollback';
+      END IF;
+      RETURN NEW;
+    END $$`);
+  await sql.unsafe(`CREATE TRIGGER test_embedding_batch_rollback BEFORE INSERT OR UPDATE ON embeddings FOR EACH ROW EXECUTE FUNCTION test_embedding_batch_rollback()`);
+  try {
+    await assert.rejects(ensureEmbeddings("article", items), /intentional embedding batch rollback/);
+  } finally {
+    await sql.unsafe("DROP TRIGGER test_embedding_batch_rollback ON embeddings");
+    await sql.unsafe("DROP FUNCTION test_embedding_batch_rollback()");
+  }
+
+  assert.equal(requests.length, before + 1, "the provider was called once before the business transaction failed");
+  assert.equal(await persisted("article", items[0]!.id), undefined, "the first vector rolls back with the failed batch");
+  assert.equal(await persisted("article", items[1]!.id), undefined, "the failing vector is not stored");
+  const [received] = await sql<{ status: string; completed_at: Date | null }[]>`
+    SELECT status, completed_at FROM receipts WHERE model=${EMBEDDING_MODEL} AND purpose='embedding' AND subject=${subject}`;
+  assert.equal(received!.status, "received");
+  assert.equal(received!.completed_at, null);
+
+  const got = await ensureEmbeddings("article", items);
+  assert.equal(requests.length, before + 1, "retry reuses the saved paid response instead of calling the provider again");
+  assert.deepEqual(got.get(items[0]!.id), [1, 0, 0, 0]);
+  assert.deepEqual(got.get(items[1]!.id), [1, 0, 0, 0]);
+  assert.deepEqual(await persisted("article", items[0]!.id), [1, 0, 0, 0]);
+  assert.deepEqual(await persisted("article", items[1]!.id), [1, 0, 0, 0]);
+  const [completed] = await sql<{ status: string; completed_at: Date | null }[]>`
+    SELECT status, completed_at FROM receipts WHERE model=${EMBEDDING_MODEL} AND purpose='embedding' AND subject=${subject}`;
+  assert.equal(completed!.status, "completed");
+  assert.ok(completed!.completed_at);
+});
+
 test("valid reordered batch indices preserve input mapping", async () => {
   response = () => ({ data: [{ index: 1, embedding: [0, 1, 0, 0] }, { index: 0, embedding: [1, 0, 0, 0] }] });
   const items = [item(), item()];
