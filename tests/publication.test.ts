@@ -148,7 +148,6 @@ test("weekly v1 exposes published issues with stable lookup, caching and withdra
   const id = await article();
   await publishArticle(id, released());
   const content = {
-    title: `Weekly ${WEEKLY_KEY}`,
     overview: `OVERVIEW-${T}`,
     themes: [{
       heading: "模型",
