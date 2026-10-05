@@ -42,10 +42,8 @@ export interface ModelStep {
   env: string;
   /** Receipt purposes it produces (for the admin statistics). */
   purposes: string[];
-  /** Requires a model explicitly marked as vision-capable. */
+  /** The step needs a model that reads images. */
   vision?: boolean;
-  /** Accepts text or vision models; runtime may attach images only for the latter. */
-  optionalVision?: boolean;
 }
 
 /**

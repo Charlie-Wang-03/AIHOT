@@ -13,16 +13,14 @@ export interface Capability {
   default: string;
   /** Receipt purposes this capability produces (for the admin statistics). */
   purposes: string[];
-  /** This step requires an explicitly vision-capable model. */
+  /** The step needs a model that reads images. */
   vision?: boolean;
-  /** This step accepts either kind; images are attached only when the chosen model explicitly supports them. */
-  optionalVision?: boolean;
 }
 
 export const CAPABILITIES = {
   prefilter: { label: "精选预筛（是否属于这个行业，宽召回）", env: "PREFILTER_MODEL", default: DEFAULTS.prefilter ?? "default", purposes: ["prefilter_article"] },
   score: { label: "精选评分（两次独立评分，按信源分级门槛）", env: "SCORE_MODEL", default: DEFAULTS.score ?? "default", purposes: ["score_article"] },
-  understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由，能看图时看首图）", env: "UNDERSTAND_MODEL", default: DEFAULTS.understand ?? "default", purposes: ["understand_article"], optionalVision: true },
+  understand: { label: "内容理解（入选和接近入选的标题、摘要、推荐理由，能看图时看首图）", env: "UNDERSTAND_MODEL", default: DEFAULTS.understand ?? "default", purposes: ["understand_article"] },
   summarize: { label: "标题摘要（其余文章的中文标题与摘要）", env: "SUMMARIZE_MODEL", default: DEFAULTS.summarize ?? "default", purposes: ["summarize_article"] },
   structure: { label: "结构抽取（分类、标签、主体公司、事件事实，不写读者文字）", env: "STRUCTURE_MODEL", default: DEFAULTS.structure ?? "default", purposes: ["structure_article"] },
   group: { label: "事件归组（新报道与候选事实的关系：同一次发生、同一事件的进展、无关；被同一篇报道连起来的两个事件是否同一事件）", env: "GROUP_MODEL", default: DEFAULTS.group ?? "default", purposes: ["group_article", "group_signal", "group_story"] },
@@ -62,11 +60,9 @@ export function modelSupportsVision(model: string): boolean {
   return MODELS[model]?.vision === true;
 }
 
-/** The admin/runtime compatibility rule for a capability and a registered model. */
+/** Whether a step can use a registered model. A model that reads images writes text as well. */
 export function capabilityAcceptsModel(capability: Capability, model: { vision?: boolean }): boolean {
-  if (capability.vision) return model.vision === true;
-  if (capability.optionalVision) return true;
-  return model.vision !== true;
+  return !capability.vision || model.vision === true;
 }
 
 /** The model a capability uses now: admin switch, else environment, else the code default. */
