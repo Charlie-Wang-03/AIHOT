@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { STORY_REVIEW_MIN_CONFIDENCE, TIE_MIN_CONFIDENCE } from "@aihot/backend/events/relate";
 import {
+  DEFAULT_RELATION_THRESHOLDS,
   parseRelationGoldJsonl,
   relationMetrics,
   sampleRelationGold,
@@ -86,14 +88,20 @@ test("multiclass metrics expose the confusion matrix, per-class scores, macro-F1
   assert.equal(metrics.sampleSize, 6);
   assert.equal(metrics.evaluated, 5);
   assert.equal(metrics.errors, 1);
+  assert.equal(metrics.coverage, 0.833);
   assert.equal(metrics.accuracy, 0.6);
+  assert.equal(metrics.completeAccuracy, 0.5);
   assert.equal(metrics.macroF1, 0.5);
   assert.equal(metrics.confusionMatrix.SAME_OCCURRENCE.SAME_STORY, 1);
   assert.deepEqual(metrics.perClass.SAME_OCCURRENCE, { precision: 1, recall: 0.5, f1: 0.667, support: 2 });
   assert.deepEqual(metrics.perClass.UNRELATED, { precision: 0, recall: 0, f1: 0, support: 1 });
 });
 
-test("story-level threshold metrics match the production tie semantics", () => {
+test("default thresholds follow production constants", () => {
+  assert.deepEqual(DEFAULT_RELATION_THRESHOLDS, [...new Set([STORY_REVIEW_MIN_CONFIDENCE, TIE_MIN_CONFIDENCE])]);
+});
+
+test("story-level threshold metrics keep valid-output quality separate from coverage", () => {
   const predictions: RelationPrediction[] = [
     { caseId: "1", gold: "SAME_OCCURRENCE", relation: "SAME_OCCURRENCE", confidence: 0.9 },
     { caseId: "2", gold: "SAME_STORY", relation: "SAME_STORY", confidence: 0.77 },
@@ -101,10 +109,12 @@ test("story-level threshold metrics match the production tie semantics", () => {
     { caseId: "4", gold: "ROUNDUP", relation: "ROUNDUP", confidence: 0.99 },
   ];
 
-  assert.deepEqual(storyTieMetrics(predictions, 0.75), {
-    threshold: 0.75, tp: 2, fp: 1, fn: 0, tn: 1, precision: 0.667, recall: 1, f1: 0.8, accuracy: 0.75,
+  assert.deepEqual(storyTieMetrics(predictions, 0.75, 5), {
+    threshold: 0.75, sampleSize: 5, evaluated: 4, errors: 1, coverage: 0.8,
+    tp: 2, fp: 1, fn: 0, tn: 1, precision: 0.667, recall: 1, f1: 0.8, accuracy: 0.75, completeAccuracy: 0.6,
   });
-  assert.deepEqual(storyTieMetrics(predictions, 0.8), {
-    threshold: 0.8, tp: 1, fp: 1, fn: 1, tn: 1, precision: 0.5, recall: 0.5, f1: 0.5, accuracy: 0.5,
+  assert.deepEqual(storyTieMetrics(predictions, 0.8, 5), {
+    threshold: 0.8, sampleSize: 5, evaluated: 4, errors: 1, coverage: 0.8,
+    tp: 1, fp: 1, fn: 1, tn: 1, precision: 0.5, recall: 0.5, f1: 0.5, accuracy: 0.5, completeAccuracy: 0.4,
   });
 });

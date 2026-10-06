@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { REPO_ROOT } from "@aihot/backend/config";
+import { STORY_REVIEW_MIN_CONFIDENCE, TIE_MIN_CONFIDENCE } from "@aihot/backend/events/relate";
 import type { RelationGoldRow } from "../scripts/eval-relations-core.ts";
 
 const exec = promisify(execFile);
@@ -19,9 +20,10 @@ const row = (caseId: string, input: string, relation: RelationGoldRow["gold"]["r
 });
 
 interface Result {
-  summary: { evaluated: number; errors: number; accuracy: number; tokensIn: number; tokensOut: number };
+  thresholds: number[];
+  summary: { evaluated: number; errors: number; coverage: number; accuracy: number; completeAccuracy: number; tokensIn: number; tokensOut: number };
   confusionMatrix: unknown;
-  cases: Array<{ caseId: string; receiptId: number; decision: string | null; error: string | null }>;
+  cases: Array<{ caseId: string; receiptId: number; reused: boolean; decision: string | null; error: string | null }>;
 }
 
 async function evaluate(rows: RelationGoldRow[], providerUrl: string, concurrency = 6): Promise<Result> {
@@ -39,7 +41,8 @@ async function evaluate(rows: RelationGoldRow[], providerUrl: string, concurrenc
     });
     report = stdout.split("\n").find((line) => line.startsWith("report: "))?.slice(8);
     assert.ok(report, stdout);
-    return (JSON.parse(readFileSync(report, "utf8")) as { models: Record<string, Result> }).models["deepseek-flash"]!;
+    const parsed = JSON.parse(readFileSync(report, "utf8")) as { meta: { thresholds: number[] }; models: Record<string, Omit<Result, "thresholds">> };
+    return { ...parsed.models["deepseek-flash"]!, thresholds: parsed.meta.thresholds };
   } finally {
     if (report) rmSync(report);
     rmSync(dir, { recursive: true, force: true });
@@ -60,10 +63,13 @@ test("identical pair inputs retain every gold case on both cold and cached evalu
   for (const result of [cold, warm]) {
     assert.equal(result.summary.evaluated, 3);
     assert.equal(result.summary.errors, 0);
+    assert.equal(result.summary.coverage, 1);
     assert.equal(result.summary.accuracy, 0.333);
+    assert.equal(result.summary.completeAccuracy, 0.333);
     assert.equal(result.summary.tokensIn, 200, "shared receipts count once");
     assert.equal(new Set(result.cases.map((item) => item.caseId)).size, 3);
   }
+  assert.deepEqual(cold.thresholds, [...new Set([STORY_REVIEW_MIN_CONFIDENCE, TIE_MIN_CONFIDENCE])]);
   assert.deepEqual(cold.confusionMatrix, warm.confusionMatrix);
   assert.equal(cold.cases.find((item) => item.caseId === "duplicate-1")!.receiptId,
     cold.cases.find((item) => item.caseId === "duplicate-2")!.receiptId);
@@ -80,11 +86,17 @@ test("failed duplicate inputs share one attempt and a later retry retains all re
   const failed = await evaluate(rows, provider.url, 1);
   assert.equal(provider.hits(), 1, "sequential duplicate cases do not retry the failed response");
   assert.equal(failed.summary.errors, 2);
+  assert.equal(failed.summary.coverage, 0);
+  assert.equal(failed.summary.accuracy, 0);
+  assert.equal(failed.summary.completeAccuracy, 0);
+  assert.deepEqual(failed.cases.map((item) => item.reused), [false, true], "the duplicate shares the failed in-flight result");
   assert.equal(failed.summary.tokensIn, 100);
   const retried = await evaluate(rows, provider.url, 1);
   assert.equal(provider.hits(), 2);
   assert.equal(retried.summary.errors, 0);
   assert.equal(retried.summary.evaluated, 2);
+  assert.equal(retried.summary.coverage, 1);
+  assert.equal(retried.summary.completeAccuracy, 1);
   assert.equal(retried.summary.tokensIn, 400, "both attempts count, including the unusable response");
   assert.equal(retried.summary.tokensOut, 40);
   assert.equal(retried.cases[0]!.receiptId, failed.cases[0]!.receiptId);
