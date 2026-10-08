@@ -84,8 +84,12 @@ for (const composite of [false, true]) test(`a ${composite ? "roundup" : "single
 
 // The grouping decision and the paid result it consumes must commit together. Without this,
 // a failed completion can leave an article grouped while its paid response stays "received".
-for (const composite of [false, true]) test(`receipt completion failure rolls back ${composite ? "roundup" : "report"} grouping and recovery reuses the response`, async () => {
-  const id = await report(composite ? "receipt-atomic-roundup" : "receipt-atomic-report", composite);
+for (const kind of ["report", "roundup", "kept"] as const) test(`receipt completion failure rolls back ${kind} grouping and recovery reuses the response`, async () => {
+  const id = await report(`receipt-atomic-${kind}`, kind === "roundup");
+  if (kind === "kept") {
+    await sql`INSERT INTO fact_articles (fact_id, article_id, role) VALUES (${factId}, ${id}, 'report')`;
+    await sql`UPDATE articles SET selection_adds_value = NULL WHERE id = ${id}`;
+  }
   await sql.unsafe(`CREATE FUNCTION fail_grouping_receipt() RETURNS trigger LANGUAGE plpgsql AS $body$ BEGIN
     IF NEW.status = 'completed' AND NEW.purpose = 'group_article'
       THEN RAISE EXCEPTION 'grouping receipt commit interrupted';
@@ -102,17 +106,24 @@ for (const composite of [false, true]) test(`receipt completion failure rolls ba
   const after = provider.hits();
   assert.ok(after > before, "the model response was received before the injected commit failure");
   assert.equal((await sql`SELECT 1 FROM grouping_decisions WHERE article_id = ${id}`).length, 0, "the decision must roll back");
-  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id = ${id}`).length, 0, "membership must roll back");
+  assert.equal((await sql`SELECT 1 FROM fact_articles WHERE article_id = ${id}`).length, kind === "kept" ? 1 : 0,
+    "no new membership can commit when receipt completion fails");
   const [failed] = await sql<{ grouping_status: string }[]>`SELECT grouping_status FROM articles WHERE id = ${id}`;
   assert.equal(failed!.grouping_status, "failed");
-  const receipts = await sql<{ status: string }[]>`SELECT status FROM receipts WHERE purpose = 'group_article' AND subject = ${`article:${id}`}`;
-  assert.deepEqual(receipts.map((receipt) => receipt.status), ["received"]);
+  const receipts = await sql<{ purpose: string; status: string }[]>`
+    SELECT purpose, status FROM receipts WHERE purpose IN ('group_article', 'group_review')
+      AND subject LIKE ${`article:${id}%`} ORDER BY id`;
+  assert.ok(receipts.some((receipt) => receipt.purpose === "group_article"), "the batch judgement has a receipt");
+  assert.ok(receipts.every((receipt) => receipt.status === "received"), "no receipt completes on a rolled-back decision");
 
   const result = await groupArticle(id);
-  assert.equal(result.verdict, composite ? "roundup" : "same-fact");
+  assert.equal(result.verdict, kind === "roundup" ? "roundup" : kind === "kept" ? "kept" : "same-fact");
   assert.equal(provider.hits(), after, "recovery must reuse the already paid response");
-  const [completed] = await sql<{ status: string }[]>`SELECT status FROM receipts WHERE purpose = 'group_article' AND subject = ${`article:${id}`}`;
-  assert.equal(completed!.status, "completed");
+  const completed = await sql<{ status: string }[]>`
+    SELECT status FROM receipts WHERE purpose IN ('group_article', 'group_review')
+      AND subject LIKE ${`article:${id}%`}`;
+  assert.equal(completed.length, receipts.length);
+  assert.ok(completed.every((receipt) => receipt.status === "completed"));
   assert.equal((await sql`SELECT 1 FROM grouping_decisions WHERE article_id = ${id}`).length, 1);
 });
 
